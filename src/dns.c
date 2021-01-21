@@ -3,6 +3,8 @@
  * ------------------------------------------------------------------ */
 
 #include "lget.h"
+
+#ifndef SYSTEM_RESOLVER
 #include <endian.h>
 
 /**
@@ -106,8 +108,19 @@ struct r_data
  * Address list of DNS Root Servers
  */
 static const unsigned int dns_servers[] = {
-    0x08080808,
-    0x08080404
+    0xc6290004, /* a.root-servers.net 198.41.0.4, 2001:503:ba3e::2:30 VeriSign, Inc. */
+    0xc7090ec9, /* b.root-servers.net 199.9.14.201, 2001:500:200::b University of Southern California (ISI) */
+    0xc021040c, /* c.root-servers.net 192.33.4.12, 2001:500:2::c Cogent Communications */
+    0xc7075b0d, /* d.root-servers.net 199.7.91.13, 2001:500:2d::d University of Maryland */
+    0xc0cbe60a, /* e.root-servers.net 192.203.230.10, 2001:500:a8::e NASA (Ames Research Center) */
+    0xc00505f1, /* f.root-servers.net 192.5.5.241, 2001:500:2f::f Internet Systems Consortium, Inc. */
+    0xc0702404, /* g.root-servers.net 192.112.36.4, 2001:500:12::d0d US Department of Defense (NIC) */
+    0xc661be35, /* h.root-servers.net 198.97.190.53, 2001:500:1::53 US Army (Research Lab) */
+    0xc0249411, /* i.root-servers.net 192.36.148.17, 2001:7fe::53 Netnod */
+    0xc03a801e, /* j.root-servers.net 192.58.128.30, 2001:503:c27::2:30 VeriSign, Inc. */
+    0xc1000e81, /* k.root-servers.net 193.0.14.129, 2001:7fd::1 RIPE NCC */
+    0xc707532a, /* l.root-servers.net 199.7.83.42, 2001:500:9f::42 ICANN */
+    0xca0c1b21  /* m.root-servers.net 202.12.27.33, 2001:dc3::35 WIDE Project */
 };
 
 /**
@@ -205,7 +218,7 @@ static size_t dns_decompress_name ( const unsigned char *buffer, size_t len, siz
 /**
  * Perform a DNS query by sending a packet
  */
-static int ngethostbyname ( const unsigned char *host, size_t host_len, size_t * attempts,
+static int ngethostbyname ( const unsigned char *host, size_t host_len, size_t *attempts,
     unsigned int *addr )
 {
     int sock;
@@ -293,6 +306,7 @@ static int ngethostbyname ( const unsigned char *host, size_t host_len, size_t *
     /* Validate host buffer size */
     if ( host_len > sizeof ( buffer ) - sizeof ( struct dns_header ) )
     {
+        close ( sock );
         errno = ENOBUFS;
         return -1;
     }
@@ -321,7 +335,7 @@ static int ngethostbyname ( const unsigned char *host, size_t host_len, size_t *
     }
 
     /* Set socket address length */
-    dest_len = sizeof dest;
+    dest_len = sizeof ( dest );
 
     /* Receive the answer from DNS server */
     if ( ( ssize_t ) ( len =
@@ -331,9 +345,6 @@ static int ngethostbyname ( const unsigned char *host, size_t host_len, size_t *
         ( *attempts )++;
         goto recurse;
     }
-
-    /* Socket is no longer needed */
-    close ( sock );
 
     /* Move ahead of the DNS header and the query field */
     offset = query_len;
@@ -360,6 +371,7 @@ static int ngethostbyname ( const unsigned char *host, size_t host_len, size_t *
         if ( ntohs ( resource->type ) == T_A )
         {
             memcpy ( addr, buffer + offset, sizeof ( unsigned int ) );
+            close ( sock );
             return 0;
         }
 
@@ -373,6 +385,7 @@ static int ngethostbyname ( const unsigned char *host, size_t host_len, size_t *
             ( *attempts )++;
             if ( !ngethostbyname ( ns_name, ns_name_len, attempts, addr ) )
             {
+                close ( sock );
                 return 0;
             }
         }
@@ -469,6 +482,7 @@ static int ngethostbyname ( const unsigned char *host, size_t host_len, size_t *
         ( *attempts )++;
         if ( ngethostbyname ( ns_name, ns_name_len, attempts, &dest.sin_addr.s_addr ) < 0 )
         {
+            close ( sock );
             return -1;
         }
 
@@ -477,6 +491,7 @@ static int ngethostbyname ( const unsigned char *host, size_t host_len, size_t *
     }
 
     /* No address has been found */
+    close ( sock );
     errno = ENODATA;
     return -1;
 }
@@ -501,3 +516,37 @@ int nsaddr ( const char *hostname, unsigned int *addr )
 
     return ngethostbyname ( host, strlen ( hostname ) + 2, &attempts, addr );
 }
+
+#else
+
+/**
+ * Resolve hostname into IPv4 address
+ */
+int nsaddr ( const char *server_name, unsigned int *address )
+{
+    struct hostent *he;
+    struct in_addr **addr_list;
+
+    /* Query host addess */
+    if ( !( he = gethostbyname ( server_name ) ) )
+    {
+        return -1;
+    }
+
+    /* Assign list pointer */
+    addr_list = ( struct in_addr ** ) he->h_addr_list;
+
+    /* At least one address required */
+    if ( !addr_list[0] )
+    {
+        errno = ENODATA;
+        return -1;
+    }
+
+    /* Assign host address */
+    *address = ( *addr_list )[0].s_addr;
+
+    return 0;
+}
+
+#endif
