@@ -142,15 +142,15 @@ static ssize_t dns_decompress_name ( const unsigned char *in, size_t ipos,
 }
 
 /**
- * Resolve encoded hostname via Root Servers with depth check and retry
+ * Resolve encoded hostname via Root Servers
  */
-static int dns_resolve_root ( const unsigned char *encoded, size_t enclen, size_t depth,
+static int dns_resolve_root ( const unsigned char *encoded, size_t enclen, size_t *querycnt,
     unsigned int *addr );
 
 /**
  * Perform DNS query with recursion
  */
-static int dns_recursive_query ( const unsigned char *encoded, size_t enclen, size_t depth,
+static int dns_recursive_query ( const unsigned char *encoded, size_t enclen, size_t *querycnt,
     unsigned int ns, unsigned int *addr )
 {
     int sock;
@@ -177,10 +177,13 @@ static int dns_recursive_query ( const unsigned char *encoded, size_t enclen, si
     unsigned char hostbuf[DNS_NAME_SIZE_MAX];
 
     /* Check for recursion limit exceeded */
-    if ( depth >= DNS_DEPTH_LIMIT )
+    if ( *querycnt >= DNS_QUERY_LIMIT )
     {
         return -1;
     }
+
+    /* Increment queries counter */
+    *querycnt += 1;
 
     /* Get current time */
     gettimeofday ( &tv, NULL );
@@ -325,7 +328,7 @@ static int dns_recursive_query ( const unsigned char *encoded, size_t enclen, si
                 ( const unsigned int * ) ( ( const unsigned char * ) answer +
                 sizeof ( struct dns_answer_t ) );
 
-            if ( dns_recursive_query ( encoded, enclen, depth + 1, *addrptr, addr ) >= 0 )
+            if ( dns_recursive_query ( encoded, enclen, querycnt, *addrptr, addr ) >= 0 )
             {
                 return 0;
             }
@@ -336,7 +339,7 @@ static int dns_recursive_query ( const unsigned char *encoded, size_t enclen, si
     ptr = ptrbackup;
 
     /* Look up for NS records in AUTHORITY section */
-    for ( i = 0; i < header->auth_count; i++ )
+    for ( i = 0; i < auth_count; i++ )
     {
         if ( !( answer = dns_nearby_answer ( &ptr, limit ) ) )
         {
@@ -354,9 +357,9 @@ static int dns_recursive_query ( const unsigned char *encoded, size_t enclen, si
                     dns_decompress_name ( buffer, hostptr - buffer, len, hostbuf,
                         sizeof ( hostbuf ) ) ) >= 0 )
             {
-                if ( dns_resolve_root ( hostbuf, hostlen, depth + 1, &ns_addr ) >= 0 )
+                if ( dns_resolve_root ( hostbuf, hostlen, querycnt, &ns_addr ) >= 0 )
                 {
-                    if ( dns_recursive_query ( encoded, enclen, depth + 1, ns_addr, addr ) >= 0 )
+                    if ( dns_recursive_query ( encoded, enclen, querycnt, ns_addr, addr ) >= 0 )
                     {
                         return 0;
                     }
@@ -387,7 +390,7 @@ static int dns_recursive_query ( const unsigned char *encoded, size_t enclen, si
                     dns_decompress_name ( buffer, hostptr - buffer, len, hostbuf,
                         sizeof ( hostbuf ) ) ) >= 0 )
             {
-                if ( dns_resolve_root ( hostbuf, hostlen, depth + 1, addr ) >= 0 )
+                if ( dns_resolve_root ( hostbuf, hostlen, querycnt, addr ) >= 0 )
                 {
                     return 0;
                 }
@@ -400,27 +403,22 @@ static int dns_recursive_query ( const unsigned char *encoded, size_t enclen, si
 }
 
 /**
- * Resolve encoded hostname via Root Servers with depth check and retry
+ * Resolve encoded hostname via Root Servers
  */
-static int dns_resolve_root ( const unsigned char *encoded, size_t enclen, size_t depth,
+static int dns_resolve_root ( const unsigned char *encoded, size_t enclen, size_t *querycnt,
     unsigned int *addr )
 {
-    size_t i;
-    size_t ns_seed;
     unsigned int ns;
     struct timeval tv = { 0 };
+
     /* Seed NS selection */
     gettimeofday ( &tv, NULL );
-    ns_seed = tv.tv_sec ^ tv.tv_usec;
 
-    for ( i = 0; i < DNS_N_SERVERS; i++ )
+    ns = htonl ( dns_servers[( tv.tv_sec ^ tv.tv_usec ) % DNS_N_SERVERS] );
+
+    if ( dns_recursive_query ( encoded, enclen, querycnt, ns, addr ) >= 0 )
     {
-        ns = htonl ( dns_servers[( ns_seed + i ) % DNS_N_SERVERS] );
-
-        if ( dns_recursive_query ( encoded, enclen, depth, ns, addr ) >= 0 )
-        {
-            return 0;
-        }
+        return 0;
     }
 
     return -1;
@@ -431,6 +429,7 @@ static int dns_resolve_root ( const unsigned char *encoded, size_t enclen, size_
  */
 int nsaddr ( const char *hostname, unsigned int *addr )
 {
+    size_t querycnt = 0;
     unsigned char encoded[DNS_NAME_SIZE_MAX];
 
     if ( dns_encode_hostname ( hostname, encoded, sizeof ( encoded ) ) < 0 )
@@ -438,5 +437,5 @@ int nsaddr ( const char *hostname, unsigned int *addr )
         return -1;
     }
 
-    return dns_resolve_root ( encoded, strlen ( hostname ) + 2, 0, addr );
+    return dns_resolve_root ( encoded, strlen ( hostname ) + 2, &querycnt, addr );
 }

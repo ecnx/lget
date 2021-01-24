@@ -39,7 +39,7 @@
 /**
  * DNS resolve settings
  */
-#define DNS_DEPTH_LIMIT 16
+#define DNS_QUERY_LIMIT 48
 #define DNS_NAME_SIZE_MAX 256
 
 /**
